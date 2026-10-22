@@ -20,7 +20,7 @@ jobs:
         run: |
           mkdir -p android/app/src/main/java/com/chaman/assistant
           cp native/*.java android/app/src/main/java/com/chaman/assistant/
-          sed -i 's#<application#<uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />\n    <application#' android/app/src/main/AndroidManifest.xml
+          python3 -c "p='android/app/src/main/AndroidManifest.xml';s=open(p).read();s=s.replace('<application',open('native/permissions.xml').read()+'<application',1);open(p,'w').write(s)"
       - run: npx cap sync android
       - run: cd android && chmod +x gradlew && ./gradlew assembleDebug
       - uses: actions/upload-artifact@v4
