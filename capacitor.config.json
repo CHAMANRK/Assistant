@@ -1,0 +1,6 @@
+{
+  "appId": "com.chaman.assistant",
+  "appName": "Assistant",
+  "webDir": "www",
+  "plugins": { "CapacitorHttp": { "enabled": true } }
+}

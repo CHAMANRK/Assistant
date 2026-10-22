@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Assistant</title>
+<style>
+:root{--bg:#0f1a22;--panel:#162531;--ai:#1d3243;--me:#2b7a70;--ink:#e9f1f5;--mute:#8aa0ae;--acc:#f0c24b;--err:#ff8a7a}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{display:flex;flex-direction:column;padding-top:env(safe-area-inset-top)}
+header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--panel);border-bottom:1px solid #243746}
+header h1{font-size:17px;font-weight:600;letter-spacing:.2px}
+button{font:inherit;color:inherit;border:0;cursor:pointer}
+#gear{background:none;font-size:20px;padding:4px 8px;color:var(--mute)}
+#log{flex:1;overflow-y:auto;padding:14px 0 8px;display:flex;flex-direction:column;gap:10px}
+.msg{white-space:pre-wrap;word-break:break-word;padding:11px 16px}
+.msg.ai{width:100%;background:var(--ai);border-left:3px solid var(--acc)}
+.msg.me{width:80%;align-self:flex-end;margin-right:12px;background:var(--me);border-radius:16px 16px 4px 16px}
+.msg.err{border-left-color:var(--err);color:var(--err)}
+.msg.wait{color:var(--mute)}
+form{display:flex;gap:8px;padding:10px 12px calc(10px + env(safe-area-inset-bottom));background:var(--panel);border-top:1px solid #243746}
+#in{flex:1;resize:none;max-height:120px;background:var(--bg);color:var(--ink);border:1px solid #2d4455;border-radius:12px;padding:10px 12px;font:inherit}
+#in:focus,#send:focus-visible,#gear:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+#send{background:var(--acc);color:#1a1405;font-weight:600;border-radius:12px;padding:0 18px}
+dialog{width:min(92vw,460px);max-height:88vh;margin:auto;background:var(--panel);color:var(--ink);border:1px solid #2d4455;border-radius:14px;padding:16px;overflow:auto}
+dialog::backdrop{background:#000a}
+dialog h2{font-size:16px;margin-bottom:10px}
+.prov{margin-bottom:14px}
+.prov label{display:block;font-size:13px;color:var(--mute);margin:6px 0 3px}
+.prov textarea,.prov input{width:100%;background:var(--bg);color:var(--ink);border:1px solid #2d4455;border-radius:8px;padding:8px;font:13px ui-monospace,monospace}
+.prov textarea{height:64px}
+.row{display:flex;gap:8px;justify-content:flex-end}
+.row button{padding:9px 16px;border-radius:10px;background:#243746}
+.row .ok{background:var(--acc);color:#1a1405;font-weight:600}
+</style>
+</head>
+<body>
+<header><h1>Assistant</h1><button id="gear" aria-label="Settings">⚙</button></header>
+<main id="log"></main>
+<form id="f"><textarea id="in" rows="1" placeholder="Message likho"></textarea><button id="send" type="submit">Bhejo</button></form>
+<dialog id="dlg">
+  <h2>Keys aur model</h2>
+  <div id="provs"></div>
+  <div class="row"><button id="cancel" type="button">Band</button><button id="save" class="ok" type="button">Save</button></div>
+</dialog>
+<script>
+const PROVIDERS=[
+ {id:'groq',name:'Groq',url:'https://api.groq.com/openai/v1/chat/completions',model:'llama-3.3-70b-versatile'},
+ {id:'openrouter',name:'OpenRouter',url:'https://openrouter.ai/api/v1/chat/completions',model:'meta-llama/llama-3.3-70b-instruct:free'},
+ {id:'nvidia',name:'NVIDIA',url:'https://integrate.api.nvidia.com/v1/chat/completions',model:'meta/llama-3.3-70b-instruct'},
+ {id:'cerebras',name:'Cerebras',url:'https://api.cerebras.ai/v1/chat/completions',model:'llama-3.3-70b'}
+];
+const SYSTEM=`Tu ek phone assistant hai. Jawab sabse chhota rakho, koi reason ya explanation nahi.
+Agar user koi app kholne bole, to sirf aisa jawab do: OPEN: <app ka naam>
+Baaki sawalon ka seedha chhota jawab do. User ki bhasha me bolo.`;
+const $=id=>document.getElementById(id);
+const log=$('log'),inp=$('in'),dlg=$('dlg');
+let history=[],busy=false;
+
+const load=k=>{try{return JSON.parse(localStorage.getItem(k))||{}}catch(e){return {}}};
+const store=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
+
+function add(text,cls){
+  const d=document.createElement('div');
+  d.className='msg '+cls;d.textContent=text;
+  log.appendChild(d);log.scrollTop=log.scrollHeight;return d;
+}
+
+function keysOf(p){return (load('cfg')[p.id]?.keys||'').split(',').map(s=>s.trim()).filter(Boolean)}
+function modelOf(p){return load('cfg')[p.id]?.model||p.model}
+
+async function post(p,key,messages){
+  const req=fetch(p.url,{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+key},
+    body:JSON.stringify({model:modelOf(p),messages,max_tokens:200,temperature:0.2})
+  });
+  const timeout=new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),25000));
+  const r=await Promise.race([req,timeout]);
+  if(!r.ok)throw new Error(p.name+' '+r.status);
+  const j=await r.json();
+  const t=j.choices?.[0]?.message?.content;
+  if(!t)throw new Error(p.name+' empty');
+  return t.trim();
+}
+
+async function askAI(messages){
+  const idx=load('idx');
+  for(const p of PROVIDERS){
+    const keys=keysOf(p);
+    if(!keys.length)continue;
+    const start=(idx[p.id]||0)%keys.length;
+    for(let i=0;i<keys.length;i++){
+      const n=(start+i)%keys.length;
+      try{
+        const out=await post(p,keys[n],messages);
+        idx[p.id]=n;store('idx',idx);
+        return out;
+      }catch(e){/* agli key / agla provider */}
+    }
+  }
+  throw new Error('Sab keys fail. Settings me keys check karo.');
+}
+
+async function openApp(name){
+  const P=window.Capacitor?.Plugins?.AppOpener;
+  if(!P)throw new Error('Ye sirf APK me chalta hai');
+  return P.open({name});
+}
+
+async function send(text){
+  busy=true;add(text,'me');
+  const w=add('...','ai wait');
+  history.push({role:'user',content:text});
+  history=history.slice(-12);
+  try{
+    const reply=await askAI([{role:'system',content:SYSTEM},...history]);
+    const m=reply.match(/^\s*OPEN:\s*(.+)$/im);
+    if(m){
+      try{await openApp(m[1].trim());w.textContent='ho gaya';w.className='msg ai'}
+      catch(e){w.textContent='App nahi mili: '+m[1].trim();w.className='msg ai err'}
+      history.push({role:'assistant',content:'ho gaya'});
+    }else{
+      w.textContent=reply;w.className='msg ai';
+      history.push({role:'assistant',content:reply});
+    }
+  }catch(e){
+    history.pop();
+    w.textContent=e.message;w.className='msg ai err';
+  }
+  busy=false;log.scrollTop=log.scrollHeight;
+}
+
+$('f').addEventListener('submit',e=>{
+  e.preventDefault();
+  const t=inp.value.trim();
+  if(!t||busy)return;
+  inp.value='';inp.style.height='auto';send(t);
+});
+inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(inp.scrollHeight,120)+'px'});
+
+function buildSettings(){
+  const cfg=load('cfg');
+  $('provs').innerHTML='';
+  PROVIDERS.forEach(p=>{
+    const d=document.createElement('div');d.className='prov';
+    d.innerHTML=`<label>${p.name} keys (comma se alag)</label><textarea data-k="${p.id}" spellcheck="false"></textarea><label>${p.name} model</label><input data-m="${p.id}" spellcheck="false">`;
+    d.querySelector('textarea').value=cfg[p.id]?.keys||'';
+    d.querySelector('input').value=cfg[p.id]?.model||p.model;
+    $('provs').appendChild(d);
+  });
+}
+function openSettings(){buildSettings();dlg.showModal()}
+$('gear').onclick=openSettings;
+$('cancel').onclick=()=>dlg.close();
+$('save').onclick=()=>{
+  const cfg={};
+  PROVIDERS.forEach(p=>{
+    cfg[p.id]={
+      keys:document.querySelector(`[data-k="${p.id}"]`).value.trim(),
+      model:document.querySelector(`[data-m="${p.id}"]`).value.trim()||p.model
+    };
+  });
+  store('cfg',cfg);store('idx',{});dlg.close();
+};
+
+if(!PROVIDERS.some(p=>keysOf(p).length)){
+  add('Pehle settings (⚙) me apni keys paste karo.','ai');
+}
+</script>
+</body>
+</html>
