@@ -1,5 +1,6 @@
 package com.chaman.assistant;
 
+import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
 import android.hardware.camera2.CameraCharacteristics;
@@ -8,12 +9,15 @@ import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
 import android.provider.Settings;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
-@CapacitorPlugin(name = "Phone")
+@CapacitorPlugin(name = "Phone", permissions = {@Permission(strings = {Manifest.permission.CALL_PHONE}, alias = "call")})
 public class PhonePlugin extends Plugin {
 
     @PluginMethod
@@ -89,6 +93,34 @@ public class PhonePlugin extends Plugin {
             call.resolve();
         } catch (Exception e) {
             call.reject("Panel nahi khula");
+        }
+    }
+
+    @PluginMethod
+    public void call(PluginCall call) {
+        if (getPermissionState("call") != PermissionState.GRANTED) {
+            requestPermissionForAlias("call", call, "callCb");
+            return;
+        }
+        doCall(call);
+    }
+
+    @PermissionCallback
+    private void callCb(PluginCall call) {
+        if (getPermissionState("call") == PermissionState.GRANTED) doCall(call);
+        else call.reject("Call ki permission nahi mili");
+    }
+
+    private void doCall(PluginCall call) {
+        String n = call.getString("number");
+        if (n == null || n.isEmpty()) { call.reject("Number khali hai"); return; }
+        try {
+            Intent i = new Intent(Intent.ACTION_CALL, Uri.fromParts("tel", n, null));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(i);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Call fail");
         }
     }
 }

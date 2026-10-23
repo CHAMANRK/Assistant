@@ -61,12 +61,13 @@ const PROVIDERS=[
 ];
 const SYSTEM=`Tu ek phone assistant hai. Tujhe Najeef ne banaya hai.
 Jawab sabse chhota rakho, koi reason ya explanation nahi.
-Tu ye kaam kar sakta hai: app kholna, torch on/off, volume (up/down/mute/0-100), brightness (0-100), WiFi/Internet/Bluetooth ka panel kholna, SMS bhejna, SMS padhna.
+Tu ye kaam kar sakta hai: app kholna, torch on/off, volume (up/down/mute/0-100), brightness (0-100), WiFi/Internet/Bluetooth ka panel kholna, SMS bhejna, SMS padhna, phone call karna.
 Agar user inme se koi kaam bole, to sirf ek line me command do, aur kuch nahi:
 OPEN: <app ka naam>
 DO: torch on | DO: torch off | DO: volume up | DO: volume down | DO: volume mute | DO: volume 40 | DO: brightness 70 | DO: wifi | DO: internet | DO: bluetooth
 SMS: <contact ka naam ya number> | <message text>
 READ: <contact ka naam> ya READ: last
+CALL: <contact ka naam ya number>
 Agar user puche tu kya kya kar sakta hai, to upar ki abilities chhote me bata do. Baaki sawalon ka seedha chhota jawab do. User ki bhasha me bolo.`;
 const $=id=>document.getElementById(id);
 const log=$('log'),inp=$('in'),dlg=$('dlg');
@@ -139,36 +140,50 @@ async function doPhone(arg){
   throw new Error('Ye command samajh nahi aayi');
 }
 
+async function resolveTarget(target){
+  if(isNum(target)){const n=target.replace(/[\s\-]/g,'');return {name:n,number:n}}
+  const m=(await plug('Sms').findContact({name:target})).matches||[];
+  if(m.length===1)return {name:m[0].name,number:m[0].number};
+  if(m.length>1){
+    return card('Kaunsa '+target+'?',(row,done)=>{
+      m.forEach(x=>row.appendChild(btn(x.name+' '+x.number,()=>done({name:x.name,number:x.number}))));
+      row.appendChild(btn('Cancel',()=>done(null)));
+    });
+  }
+  const n=await card(target+' contacts me nahi mila. Number likho:',(row,done)=>{
+    const inp=document.createElement('input');inp.type='tel';inp.placeholder='Number';
+    row.appendChild(inp);
+    row.appendChild(btn('OK',()=>{const v=inp.value.trim();done(isNum(v)?v.replace(/[\s\-]/g,''):'')},'go'));
+    row.appendChild(btn('Cancel',()=>done(null)));
+    inp.focus();
+  });
+  if(!n)return null;
+  return {name:n,number:n};
+}
+
+async function doCall(arg){
+  const target=arg.trim();
+  if(!target)throw new Error('Kisko call karna hai?');
+  const who=await resolveTarget(target);
+  if(!who)return 'Cancel kiya';
+  const ok=await card('Call karo: '+who.name+' ('+who.number+')',(row,done)=>{
+    row.appendChild(btn('Call',()=>done(true),'go'));
+    row.appendChild(btn('Cancel',()=>done(false)));
+  });
+  if(!ok)return 'Cancel kiya';
+  await plug('Phone').call({number:who.number});
+  return 'ho gaya';
+}
+
 async function doSms(arg){
   const i=arg.indexOf('|');
   if(i<0)throw new Error('SMS ka format galat');
   const target=arg.slice(0,i).trim(),text=arg.slice(i+1).trim();
   if(!target||!text)throw new Error('Naam ya message khali hai');
   const S=plug('Sms');
-  let name=target,number=null;
-  if(isNum(target)){number=target.replace(/[\s\-]/g,'')}
-  else{
-    const m=(await S.findContact({name:target})).matches||[];
-    if(m.length===1){name=m[0].name;number=m[0].number}
-    else if(m.length>1){
-      const p=await card('Kaunsa '+target+'?',(row,done)=>{
-        m.forEach(x=>row.appendChild(btn(x.name+' '+x.number,()=>done(x))));
-        row.appendChild(btn('Cancel',()=>done(null)));
-      });
-      if(!p)return 'Cancel kiya';
-      name=p.name;number=p.number;
-    }else{
-      const n=await card(target+' contacts me nahi mila. Number likho:',(row,done)=>{
-        const inp=document.createElement('input');inp.type='tel';inp.placeholder='Number';
-        row.appendChild(inp);
-        row.appendChild(btn('OK',()=>{const v=inp.value.trim();done(isNum(v)?v.replace(/[\s\-]/g,''):'')},'go'));
-        row.appendChild(btn('Cancel',()=>done(null)));
-        inp.focus();
-      });
-      if(!n)return 'Cancel kiya';
-      name=n;number=n;
-    }
-  }
+  const who=await resolveTarget(target);
+  if(!who)return 'Cancel kiya';
+  const name=who.name,number=who.number;
   const ok=await card(name+' ('+number+')\n"'+text+'"',(row,done)=>{
     row.appendChild(btn('Bhejo',()=>done(true),'go'));
     row.appendChild(btn('Cancel',()=>done(false)));
@@ -202,6 +217,7 @@ async function runCmd(kind,arg){
   if(kind==='DO')return doPhone(arg);
   if(kind==='SMS')return doSms(arg);
   if(kind==='READ')return doRead(arg);
+  if(kind==='CALL')return doCall(arg);
   throw new Error('Command samajh nahi aayi');
 }
 
@@ -212,7 +228,7 @@ async function send(text){
   history=history.slice(-12);
   try{
     const reply=await askAI([{role:'system',content:SYSTEM},...history]);
-    const m=reply.match(/^\s*(OPEN|DO|SMS|READ):\s*(.+)$/im);
+    const m=reply.match(/^\s*(OPEN|DO|SMS|READ|CALL):\s*(.+)$/im);
     if(m){
       try{
         w.textContent=await runCmd(m[1].toUpperCase(),m[2].trim());
@@ -239,6 +255,15 @@ $('f').addEventListener('submit',e=>{
   inp.value='';inp.style.height='auto';send(t);
 });
 inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(inp.scrollHeight,120)+'px'});
+
+function syncNative(){try{plug('Overlay').saveConfig({cfg:JSON.stringify(load('cfg')),system:SYSTEM})}catch(e){}}
+let asked=false;
+async function setupOverlay(){
+  const prompt=!asked;asked=true;
+  try{await plug('Overlay').setup({prompt})}catch(e){}
+}
+syncNative();setupOverlay();
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)setupOverlay()});
 
 let torchOn=false;
 document.querySelectorAll('#chips button').forEach(b=>b.onclick=async()=>{
@@ -271,7 +296,7 @@ $('save').onclick=()=>{
       model:document.querySelector(`[data-m="${p.id}"]`).value.trim()||p.model
     };
   });
-  store('cfg',cfg);store('idx',{});dlg.close();
+  store('cfg',cfg);store('idx',{});syncNative();dlg.close();
 };
 
 if(!PROVIDERS.some(p=>keysOf(p).length)){

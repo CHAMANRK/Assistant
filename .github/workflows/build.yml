@@ -20,7 +20,13 @@ jobs:
         run: |
           mkdir -p android/app/src/main/java/com/chaman/assistant
           cp native/*.java android/app/src/main/java/com/chaman/assistant/
-          python3 -c "p='android/app/src/main/AndroidManifest.xml';s=open(p).read();s=s.replace('<application',open('native/permissions.xml').read()+'<application',1);open(p,'w').write(s)"
+          python3 - <<'PYEOF'
+          p = 'android/app/src/main/AndroidManifest.xml'
+          s = open(p).read()
+          s = s.replace('<application', open('native/permissions.xml').read() + '<application', 1)
+          s = s.replace('</application>', open('native/components.xml').read() + '</application>', 1)
+          open(p, 'w').write(s)
+          PYEOF
       - run: npx cap sync android
       - run: cd android && chmod +x gradlew && ./gradlew assembleDebug
       - uses: actions/upload-artifact@v4
